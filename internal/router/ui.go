@@ -61,7 +61,7 @@ input,textarea{width:100%;background:var(--bg);border:1px solid var(--border);co
 <div id="toast"></div>
 
 <script>
-const API='/api';
+var bp=window.location.pathname.replace(/\/+$/,'');const API=(bp===''||bp==='/')?'/api':bp+'/api';
 const typeColors={'person':'#3b82f6','org':'#22c55e','contract':'#f59e0b','date':'#8b5cf6','money':'#ef4444','location':'#06b6d4'};
 const typeNames={'person':'人物','org':'机构','contract':'合同','date':'日期','money':'金额','location':'地点'};
 
