@@ -1,7 +1,6 @@
 package ner
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -167,4 +166,3 @@ func cleanName(s string) string {
 	return s
 }
 
-func init() { _ = fmt.Sprintf }
