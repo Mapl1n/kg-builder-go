@@ -49,8 +49,13 @@ func (h *BuilderHandler) Build(c *gin.Context) {
 		}
 	}
 	if text == "" {
-		// Tika 不可用时直接用原始文本
-		text = string(rawData)
+		// Tika 不可用：尝试作为纯文本读取（非二进制文件）
+		if isPrintableText(rawData) {
+			text = string(rawData)
+		} else {
+			c.JSON(503, gin.H{"code": 503, "message": "文档解析服务(Tika)不可用，请稍后重试"})
+			return
+		}
 	}
 
 	docID := uuid.New().String()
@@ -95,4 +100,23 @@ func (h *BuilderHandler) Build(c *gin.Context) {
 		},
 	})
 	_ = model.EntityTypeConfig{}
+}
+
+// isPrintableText 检查数据是否为可读文本（非二进制）
+func isPrintableText(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	// 检查前 8KB，二进制占比 > 10% 即判定为二进制
+	checkLen := 8192
+	if len(data) < checkLen {
+		checkLen = len(data)
+	}
+	nonPrintable := 0
+	for _, b := range data[:checkLen] {
+		if b != 0 && (b < 7 || (b > 14 && b < 32)) {
+			nonPrintable++
+		}
+	}
+	return float64(nonPrintable)/float64(checkLen) < 0.10
 }

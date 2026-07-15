@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"kg-builder-go/internal/model"
 
@@ -15,7 +14,6 @@ import (
 )
 
 // GraphStore — ES 作为图存储
-// 使用 entity 索引 + relation 索引 + 跨索引查询
 type GraphStore struct {
 	es          *elasticsearch.Client
 	entityIndex string
@@ -77,12 +75,14 @@ func (s *GraphStore) SaveRelation(rel model.Relation) error {
 	return nil
 }
 
-// SearchEntity ★ 按名称搜索实体（模糊匹配）
+// SearchEntity 按名称搜索实体（模糊匹配）
 func (s *GraphStore) SearchEntity(name string, entityType string, docID string) ([]model.Entity, error) {
 	must := []interface{}{}
 	if name != "" {
 		must = append(must, map[string]interface{}{
-			"match": map[string]interface{}{"name": map[string]interface{}{"query": name, "fuzziness": "AUTO"}},
+			"match": map[string]interface{}{
+				"name": map[string]interface{}{"query": name, "fuzziness": "AUTO"},
+			},
 		})
 	}
 	if entityType != "" {
@@ -92,7 +92,15 @@ func (s *GraphStore) SearchEntity(name string, entityType string, docID string) 
 		must = append(must, map[string]interface{}{"term": map[string]string{"doc_id": docID}})
 	}
 
-	query := map[string]interface{}{"query": map[string]interface{}{"bool": map[string]interface{}{"must": must}}, "size": 50}
+	// If no filters, match_all
+	if len(must) == 0 {
+		must = append(must, map[string]interface{}{"match_all": map[string]interface{}{}})
+	}
+
+	query := map[string]interface{}{
+		"query": map[string]interface{}{"bool": map[string]interface{}{"must": must}},
+		"size":  50,
+	}
 	body, _ := json.Marshal(query)
 
 	resp, err := s.es.Search(
@@ -106,7 +114,11 @@ func (s *GraphStore) SearchEntity(name string, entityType string, docID string) 
 	defer resp.Body.Close()
 
 	var result struct {
-		Hits struct{ Hits []struct{ Source model.Entity `json:"_source"` } } `json:"hits"`
+		Hits struct {
+			Hits []struct {
+				Source model.Entity `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 
@@ -139,7 +151,13 @@ func (s *GraphStore) GetRelationsByEntity(entityID string) ([]model.Relation, er
 	)
 	defer resp.Body.Close()
 
-	var result struct{ Hits struct{ Hits []struct{ Source model.Relation `json:"_source"` } } `json:"hits"` }
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Source model.Relation `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
 	json.NewDecoder(resp.Body).Decode(&result)
 
 	relations := make([]model.Relation, 0, len(result.Hits.Hits))
@@ -149,17 +167,19 @@ func (s *GraphStore) GetRelationsByEntity(entityID string) ([]model.Relation, er
 	return relations, nil
 }
 
-// GetGraphData ★ 获取图谱可视化数据
+var entityTypeGroup = map[string]int{
+	"person": 0, "org": 1, "contract": 2, "date": 3, "money": 4, "location": 5,
+}
+
+// GetGraphData 获取图谱可视化数据 (BFS)
 func (s *GraphStore) GetGraphData(entityID string, depth int) (*model.GraphData, error) {
 	if depth <= 0 {
 		depth = 2
 	}
 
-	// BFS from entityID
 	visited := make(map[string]bool)
 	var nodes []model.GraphNode
 	var edges []model.GraphEdge
-	entityMap := make(map[string]model.Entity)
 
 	queue := []string{entityID}
 	visited[entityID] = true
@@ -167,28 +187,18 @@ func (s *GraphStore) GetGraphData(entityID string, depth int) (*model.GraphData,
 	for d := 0; d < depth && len(queue) > 0; d++ {
 		var next []string
 		for _, eid := range queue {
-			// Fetch entity
 			ent, err := s.getEntity(eid)
 			if err == nil && ent != nil {
-				entityMap[eid] = *ent
-				color := "#3b82f6"
-				switch ent.Type {
-				case "person": color = "#3b82f6"
-				case "org": color = "#22c55e"
-				case "contract": color = "#f59e0b"
-				case "date": color = "#8b5cf6"
-				case "money": color = "#ef4444"
-				case "location": color = "#06b6d4"
-				}
 				nodes = append(nodes, model.GraphNode{
-					ID: ent.ID, Name: ent.Name, Type: ent.Type,
-					Group: entityTypeGroup[ent.Type],
-					DocID: ent.DocID, Size: 30,
+					ID:     ent.ID,
+					Name:   ent.Name,
+					Type:   ent.Type,
+					Group:  entityTypeGroup[ent.Type],
+					DocID:  ent.DocID,
+					Size:   30,
 				})
-				_ = color
 			}
 
-			// Get relations
 			rels, _ := s.GetRelationsByEntity(eid)
 			for _, rel := range rels {
 				edges = append(edges, model.GraphEdge{
@@ -218,13 +228,9 @@ func (s *GraphStore) getEntity(id string) (*model.Entity, error) {
 	}
 	defer resp.Body.Close()
 	if resp.IsError() {
-		return nil, fmt.Errorf("not found")
+		return nil, fmt.Errorf("entity not found: %s", id)
 	}
 	var ent struct{ Source model.Entity `json:"_source"` }
 	json.NewDecoder(resp.Body).Decode(&ent)
 	return &ent.Source, nil
 }
-
-var entityTypeGroup = map[string]int{"person":0,"org":1,"contract":2,"date":3,"money":4,"location":5}
-
-func init() { _ = strings.TrimSpace }

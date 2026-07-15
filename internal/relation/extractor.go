@@ -1,7 +1,6 @@
 package relation
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -108,5 +107,3 @@ func cleanEntityName(s string) string {
 	s = strings.TrimRight(s, "，,。.！!；;：:")
 	return s
 }
-
-func init() { _ = fmt.Sprintf }
