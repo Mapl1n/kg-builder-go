@@ -23,13 +23,21 @@ type Recognizer struct {
 func New() *Recognizer {
 	return &Recognizer{
 		personPatterns: compilePatterns(
+			// Chinese
 			`(法定代表人|负责人|联系人|经理|董事长|总经理|股东|委托人|代理人)[：:为是任]*\s*([^\s，。,\.]{2,4})`,
 			`([^\s，。,\.]{2,4})\s*(先生|女士|同志)`,
 			`([^\s，。,\.]{2,4})\s*(为|是)\s*法定代表人`,
+			// English — with context (title prefix) or standalone names
+			`(?:legal rep|representative|contact|manager|CEO|director|Mr\.?|Ms\.?)[：: ]*([A-Z][a-z]+ [A-Z][a-z]+)`,
+			`([A-Z][a-z]+ [A-Z][a-z]+)`,
 		),
 		orgPatterns: compilePatterns(
+			// Chinese
 			`([^\s，。,\.]{2,30}(?:有限公司|股份有限公司|集团|有限责任|合伙企业|事务所|学校|医院|银行))`,
 			`(甲方|乙方)[：:]?\s*([^\s，。,\.]{2,30})`,
+			// English
+			`([A-Z][a-zA-Z]+ (?:Tech|Technology|Software|Inc|Ltd|LLC|Corp|Co)\b[^\s，。,]*)`,
+			`([A-Z][a-z]+ [A-Z][a-z]+ (?:Ltd|Inc|LLC|Corp|Co))`,
 		),
 		contractPatterns: compilePatterns(
 			`(《[^》]+》)`,
@@ -37,7 +45,7 @@ func New() *Recognizer {
 			`(合同编号|协议编号|文件编号)[：:]\s*([A-Za-z0-9-]+)`,
 		),
 		datePattern:   regexp.MustCompile(`(\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[日号]?)`),
-		moneyPattern:  regexp.MustCompile(`(?:人民币|￥|¥|USD|美元)?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?\s*(?:元|万元|美元|USD))`),
+		moneyPattern:  regexp.MustCompile(`(?:人民币|RMB|￥|¥|USD|美元)?\s*(\d[\d,.]*\s*(?:万|元|万元|美元|USD|M|K|RMB))`),
 		idCardPattern: regexp.MustCompile(`(\d{17}[\dXx])`),
 		phonePattern:  regexp.MustCompile(`(1[3-9]\d{9})`),
 	}
@@ -59,10 +67,22 @@ func (r *Recognizer) Extract(docID, docName, text string) []model.Entity {
 		if isStopWord(name) {
 			return false
 		}
-		// org-specific validation
 		if t == "org" && !strings.Contains(name, "公司") && !strings.Contains(name, "集团") &&
 			!strings.Contains(name, "企业") && !strings.Contains(name, "银行") &&
-			!strings.Contains(name, "学校") && !strings.Contains(name, "医院") {
+			!strings.Contains(name, "学校") && !strings.Contains(name, "医院") &&
+			!strings.Contains(name, "Ltd") && !strings.Contains(name, "Inc") &&
+			!strings.Contains(name, "LLC") && !strings.Contains(name, "Corp") &&
+			!strings.Contains(name, "Tech") && !strings.Contains(name, "Co") {
+			return false
+		}
+		// Exclude person names that are actually locations or orgs
+		if t == "person" && (strings.HasSuffix(name, " Tech") || strings.HasSuffix(name, " Ltd") ||
+			strings.HasSuffix(name, " Inc") || strings.HasSuffix(name, " Co") ||
+			strings.HasSuffix(name, " LLC") || strings.HasSuffix(name, " Corp") ||
+			strings.Contains(name, " Tech ") || strings.Contains(name, " Ltd ") ||
+			strings.HasSuffix(name, " District") || strings.HasSuffix(name, " Road") ||
+			strings.HasSuffix(name, " Street") || strings.HasSuffix(name, " Avenue") ||
+			strings.HasSuffix(name, " City") || strings.HasSuffix(name, " Province")) {
 			return false
 		}
 		key := t + ":" + name + ":" + docID
@@ -77,61 +97,41 @@ func (r *Recognizer) Extract(docID, docName, text string) []model.Entity {
 		return true
 	}
 
-	// Person
-	for _, p := range r.personPatterns {
-		for _, m := range p.FindAllStringSubmatch(text, -1) {
-			for j := 1; j < len(m); j++ {
-				if name := cleanName(m[j]); len([]rune(name)) >= 2 {
-					add("person", name, nil)
+	matchPatterns := func(patterns []*regexp.Regexp, etype string) {
+		for _, p := range patterns {
+			for _, m := range p.FindAllStringSubmatch(text, -1) {
+				for j := 1; j < len(m); j++ {
+					if name := cleanName(m[j]); len([]rune(name)) >= 2 {
+						if etype == "contract" {
+							add(etype, name, nil)
+						} else {
+							add(etype, name, nil)
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// Org
-	for _, p := range r.orgPatterns {
-		for _, m := range p.FindAllStringSubmatch(text, -1) {
-			for j := 1; j < len(m); j++ {
-				if name := cleanName(m[j]); len([]rune(name)) >= 2 {
-					add("org", name, nil)
-				}
-			}
-		}
-	}
+	matchPatterns(r.personPatterns, "person")
+	matchPatterns(r.orgPatterns, "org")
+	matchPatterns(r.contractPatterns, "contract")
 
-	// Contract
-	for _, p := range r.contractPatterns {
-		for _, m := range p.FindAllStringSubmatch(text, -1) {
-			for j := 1; j < len(m); j++ {
-				if name := cleanName(m[j]); name != "" {
-					add("contract", name, nil)
-				}
-			}
-		}
-	}
-
-	// Date
 	for _, m := range r.datePattern.FindAllStringSubmatch(text, -1) {
 		if len(m) > 1 {
 			add("date", m[1], nil)
 		}
 	}
-
-	// Money
 	for _, m := range r.moneyPattern.FindAllStringSubmatch(text, -1) {
 		if len(m) > 1 {
 			add("money", m[1], map[string]string{"value": m[1]})
 		}
 	}
-
-	// ID Card
 	for _, m := range r.idCardPattern.FindAllStringSubmatch(text, -1) {
 		if len(m) > 1 {
 			add("person", "SFZ-"+m[1][:3]+"***", nil)
 		}
 	}
-
-	// Phone
 	for _, m := range r.phonePattern.FindAllStringSubmatch(text, -1) {
 		if len(m) > 1 {
 			add("person", "TEL-"+m[1], nil)
@@ -153,7 +153,6 @@ func cleanName(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimRight(s, "，,。.！!；;：:")
 	s = strings.TrimLeft(s, "，,。.！!；;：:为是任与被在与同和")
-	// Remove known prefix patterns like "乙方为"
 	for _, prefix := range []string{"甲方为", "乙方为", "甲方是", "乙方是"} {
 		if strings.HasPrefix(s, prefix) {
 			s = strings.TrimPrefix(s, prefix)
@@ -165,4 +164,3 @@ func cleanName(s string) string {
 	}
 	return s
 }
-
