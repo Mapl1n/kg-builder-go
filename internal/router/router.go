@@ -11,6 +11,7 @@ import (
 	"kg-builder-go/internal/ner"
 	"kg-builder-go/internal/relation"
 	"kg-builder-go/internal/store"
+	"kg-builder-go/pkg/docparser"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -49,24 +50,22 @@ func Setup(cfg *config.Config) *gin.Engine {
 			defer file.Close()
 			rawData, _ := io.ReadAll(file)
 
-			// Try Tika, fall back to raw text
-			var text string
-			client := &http.Client{Timeout: 60 * time.Second}
-			req, _ := http.NewRequest("PUT", cfg.TikaURL+"/tika", bytes.NewReader(rawData))
-			req.Header.Set("Accept", "text/plain")
-			if resp, err := client.Do(req); err == nil {
-				defer resp.Body.Close()
-				content, _ := io.ReadAll(resp.Body)
-				text = string(content)
+			// 本地 docparser 优先（纯 Go PDF/DOCX/TXT）
+			text, err := docparser.Parse(rawData, header.Filename)
+			if err != nil {
+				// 降级到 Tika
+				client := &http.Client{Timeout: 60 * time.Second}
+				req, _ := http.NewRequest("PUT", cfg.TikaURL+"/tika", bytes.NewReader(rawData))
+				req.Header.Set("Accept", "text/plain")
+				if resp, tErr := client.Do(req); tErr == nil {
+					defer resp.Body.Close()
+					content, _ := io.ReadAll(resp.Body)
+					text = string(content)
+				}
 			}
 			if text == "" {
-				// Tika unavailable: accept .txt files directly
-				if isTextContent(header.Header.Get("Content-Type")) || isPrintable(rawData) {
-					text = string(rawData)
-				} else {
-					c.JSON(503, gin.H{"code": 503, "message": "请上传 .txt 纯文本文件，或启动 Tika 解析 PDF/DOCX"})
-					return
-				}
+				c.JSON(503, gin.H{"code": 503, "message": "无法解析该文档，请上传 PDF/DOCX/TXT 文件"})
+				return
 			}
 
 			docID := uuid.New().String()
@@ -116,18 +115,4 @@ func Setup(cfg *config.Config) *gin.Engine {
 	}
 
 	return r
-}
-
-func isTextContent(mime string) bool {
-	return mime == "text/plain" || mime == "text/html" || mime == "application/json"
-}
-
-func isPrintable(data []byte) bool {
-	if len(data) == 0 { return false }
-	n := 8192; if len(data) < n { n = len(data) }
-	bad := 0
-	for _, b := range data[:n] {
-		if b != 0 && b != '\n' && b != '\r' && b != '\t' && b < 0x20 { bad++ }
-	}
-	return float64(bad)/float64(n) < 0.05
 }
